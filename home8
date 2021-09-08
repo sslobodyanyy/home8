@@ -1,0 +1,199 @@
+
+const {
+    actionEnum: { ACTIVATE_ACCOUNT, FORGOT_PASSWORD },
+    constants: { AUTHORIZATION, DONE, QUERY_ACTION_TOKEN },
+    databaseTableEnum: { USER },
+    dbFiled: { _ID },
+@@ -13,10 +14,9 @@ const {
+    passwordService
+} = require('../services');
+const {
+    ChangePass,
+    ActToken,
+    OAuth,
+    User,
+    InactiveAccount
+} = require('../dataBase');
+const { userUtil } = require('../utils');
+
+@@ -25,7 +25,7 @@ module.exports = {
+        try {
+            const { loginUser } = req;
+
+            await InactiveAccount.deleteOne({ [USER]: loginUser[_ID] });
+            await ActToken.deleteOne({ [USER]: loginUser[_ID], action: ACTIVATE_ACCOUNT });
+
+            res.json(DONE);
+        } catch (e) {
+@@ -37,7 +37,7 @@ module.exports = {
+        try {
+            const { loginUser, body: { password } } = req;
+
+            await ChangePass.deleteOne({ [USER]: loginUser[_ID] });
+            await ActToken.deleteOne({ [USER]: loginUser[_ID], action: FORGOT_PASSWORD });
+
+            const hashedPassword = await passwordService.hash(password);
+
+@@ -81,7 +81,7 @@ module.exports = {
+
+            await OAuth.deleteOne({ access_token });
+
+            res.status(statusCodes.DELETED);
+            res.sendStatus(statusCodes.DELETED);
+        } catch (e) {
+            next(e);
+        }
+@@ -93,7 +93,7 @@ module.exports = {
+
+            await OAuth.deleteMany({ user: loginUser._id });
+
+            res.status(statusCodes.DELETED);
+            res.sendStatus(statusCodes.DELETED);
+        } catch (e) {
+            next(e);
+        }
+@@ -122,7 +122,7 @@ module.exports = {
+
+            const action_token = await jwtActionService.generateActionToken();
+
+            await ChangePass.create({ action_token, [USER]: userToReturn[_ID] });
+            await ActToken.create({ action_token, [USER]: userToReturn[_ID], action: FORGOT_PASSWORD });
+
+            await emailService.sendMail(
+                userToReturn.email,
+
+
+const { emailService, jwtActionService, passwordService } = require('../services');
+const {
+    actionEnum,
+    constants: { QUERY_ACTION_TOKEN },
+    emailActionsEnum,
+    statusCodes,
+    variables: { URL_ACTIVATE }
+} = require('../config');
+const { InactiveAccount, User } = require('../dataBase');
+const { ActToken, User } = require('../dataBase');
+const { userUtil } = require('../utils');
+
+module.exports = {
+@@ -20,7 +21,7 @@ module.exports = {
+
+            const action_token = await jwtActionService.generateActionToken();
+
+            await InactiveAccount.create({ action_token, user: userToReturn._id });
+            await ActToken.create({ action_token, user: userToReturn._id, action: actionEnum.ACTIVATE_ACCOUNT });
+
+            await emailService.sendMail(
+                userToReturn.email,
+@@ -54,7 +55,7 @@ module.exports = {
+                );
+            }
+
+            res.status(statusCodes.DELETED);
+            res.sendStatus(statusCodes.DELETED);
+        } catch (e) {
+            next(e);
+        }
+    },
+    getUsers: async (req, res, next) => {
+        try {
+            const users = await User.find(req.query);
+            const usersToReturn = users.map((user) => userUtil.userNormalizator(user));
+            res.json(usersToReturn);
+        } catch (e) {
+            next(e);
+        }
+    },
+    getUserById: (req, res, next) => {
+        try {
+            const { user } = req;
+            const userToReturn = userUtil.userNormalizator(user);
+            res.json(userToReturn);
+        } catch (e) {
+            next(e);
+        }
+    },
+    updateUser: async (req, res, next) => {
+        try {
+            const { userId } = req.params;
+            const userUpdate = await User.findByIdAndUpdate(userId, req.body);
+            const userToReturn = userUtil.userNormalizator(userUpdate);
+            await emailService.sendMail(
+                userToReturn.email,
+                emailActionsEnum.UPDATE,
+                { userName: userToReturn.name }
+            );
+            res.status(statusCodes.CREATED).json(userToReturn);
+        } catch (e) {
+            next(e);
+        }
+    }
+};
+
+
+
+const {
+    actionEnum: { ACTIVATE_ACCOUNT },
+    constants: { AUTHORIZATION, TOKEN_TYPE_ACCESS },
+    databaseTableEnum: { USER },
+    errorMessage,
+    statusCodes
+} = require('../config');
+const { ErrorHandler } = require('../errors');
+const { jwtActionService, jwtService, passwordService } = require('../services');
+const { InactiveAccount, OAuth } = require('../dataBase');
+const { ActToken, OAuth } = require('../dataBase');
+
+module.exports = {
+    isAccountActivated: async (req, res, next) => {
+        try {
+            const { user } = req;
+
+            const inactiveAcc = await InactiveAccount.findOne({ [USER]: user._id });
+            const inactiveAcc = await ActToken.findOne({ [USER]: user._id, action: ACTIVATE_ACCOUNT });
+
+            if (inactiveAcc) {
+                throw new ErrorHandler(statusCodes.NOT_FOUND, errorMessage.ACCOUNT_IS_NOT_ACTIVATED);
+@@ -49,7 +50,7 @@ module.exports = {
+        }
+    },
+
+    validateActionToken: (db) => async (req, res, next) => {
+    validateActionToken: (action) => async (req, res, next) => {
+        try {
+            const token = req.get(AUTHORIZATION);
+
+@@ -59,7 +60,7 @@ module.exports = {
+
+            await jwtActionService.verifyActionToken(token);
+
+            const tokenFromDB = await db.findOne({ action_token: token }).populate(USER);
+            const tokenFromDB = await ActToken.findOne({ action_token: token, action }).populate(USER);
+
+            if (!tokenFromDB) {
+                throw new ErrorHandler(statusCodes.NOT_VALID_TOKEN, errorMessage.NOT_VALID_TOKEN);
+            }
+            req.loginUser = tokenFromDB[USER];
+            next();
+        } catch (e) {
+            next(e);
+        }
+    },
+    validateToken: (tokenType = TOKEN_TYPE_ACCESS) => async (req, res, next) => {
+        try {
+            const token = req.get(AUTHORIZATION);
+            if (!token) {
+                throw new ErrorHandler(statusCodes.NOT_VALID_TOKEN, errorMessage.NO_TOKEN);
+            }
+            await jwtService.verifyToken(token, tokenType);
+            const tokenFromDB = await OAuth.findOne({ [tokenType]: token }).populate(USER);
+            if (!tokenFromDB) {
+                throw new ErrorHandler(statusCodes.NOT_VALID_TOKEN, errorMessage.NOT_VALID_TOKEN);
+            }
+            req.loginUser = tokenFromDB.user;
+            next();
+        } catch (e) {
+            next(e);
+        }
+    }
+};
